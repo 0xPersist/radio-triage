@@ -1,0 +1,7 @@
+# Captures contain subscriber and cell identifiers. Never commit them.
+*.txt
+*.json
+!requirements.txt
+baseline-radio*
+*-radio.txt
+*-radio.json
