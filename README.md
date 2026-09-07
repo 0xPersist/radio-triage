@@ -60,9 +60,19 @@ what the baseband logs). Concretely:
 Redaction is pattern-based and cannot guarantee unrecognized identifier
 formats are caught. Review output before sharing regardless.
 
-A self-contained regression suite (`run_tests.py`, 17 checks) covers
-detection logic, redaction, escape injection, resource guards, hash
-integrity, and the Python version floor.
+Known coverage gap, measured: the digit-run patterns are `\+\d{7,15}` and
+`\b\d{13,20}\b`, so an **unprefixed digit run of 9-12 characters matches
+neither**. In practice that means a bare 10-digit national number
+(`4075551234`) or 11-digit number without `+` (`14075551234`) is **not**
+redacted, and a dash-formatted IMEI (`35-209900-176148-1`) passes through
+unless it carries an `imei=` label. E.164 numbers with `+`, bare 15-digit
+IMSI/IMEI, 20-digit ICCID, labeled identifiers and cell identity fields are
+all covered. Treat `--no-redact` output and 9-12 digit runs as sensitive.
+
+A self-contained regression suite (`run_tests.py`, 26 checks across 10
+groups) covers detection logic, redaction, escape injection, resource
+guards, hash integrity, the Python version floor, reject calibration, and
+anomaly collapse.
 
 ## Limitations
 
