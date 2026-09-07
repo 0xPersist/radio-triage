@@ -74,8 +74,16 @@ PHONE_PREFIX_RE = re.compile(r"^\[(\d)\]")
 REDACT_PATTERNS = (
     # E.164-ish phone numbers
     re.compile(r"\+\d{7,15}"),
-    # long digit runs: IMSI(15), ICCID(19-20), IMEI(15) shaped
-    re.compile(r"\b\d{13,20}\b"),
+    # Separator-formatted IMEI/IMSI: 35-209900-176148-1, 35 209900 176148 1.
+    # Must precede the bare-digit rule so the whole grouped form is replaced
+    # as one token rather than piecemeal.
+    re.compile(r"\b\d{2}[- ]\d{6}[- ]\d{6}[- ]\d\b"),
+    # Bare digit runs. Widened from 13-20 to 10-20: an unprefixed national or
+    # country-code phone number (4075551234, 14075551234) sat in the old gap
+    # and printed in the clear. 10 is the floor because that is the shortest
+    # subscriber number in practice; 9 and below is left alone so ordinary
+    # numeric log fields stay readable.
+    re.compile(r"\b\d{10,20}\b"),
     # explicit labeled identifiers
     re.compile(r"\b(?:imsi|iccid|imei|msisdn)\s*[=:]\s*\S+", re.IGNORECASE),
     # cell identity fields

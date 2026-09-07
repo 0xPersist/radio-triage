@@ -60,19 +60,24 @@ what the baseband logs). Concretely:
 Redaction is pattern-based and cannot guarantee unrecognized identifier
 formats are caught. Review output before sharing regardless.
 
-Known coverage gap, measured: the digit-run patterns are `\+\d{7,15}` and
-`\b\d{13,20}\b`, so an **unprefixed digit run of 9-12 characters matches
-neither**. In practice that means a bare 10-digit national number
-(`4075551234`) or 11-digit number without `+` (`14075551234`) is **not**
-redacted, and a dash-formatted IMEI (`35-209900-176148-1`) passes through
-unless it carries an `imei=` label. E.164 numbers with `+`, bare 15-digit
-IMSI/IMEI, 20-digit ICCID, labeled identifiers and cell identity fields are
-all covered. Treat `--no-redact` output and 9-12 digit runs as sensitive.
+Covered: E.164 numbers with `+`; bare digit runs of 10-20 characters, which
+spans national and country-code phone numbers, IMSI, IMEI and ICCID;
+separator-formatted IMEI/IMSI (`35-209900-176148-1`, `35 209900 176148 1`);
+labeled `imsi`/`iccid`/`imei`/`msisdn` identifiers; and cell identity fields
+(`mCi`, `cellIdentity`, `ci`, `pci`, `tac`, `cid`, `lac`).
 
-A self-contained regression suite (`run_tests.py`, 26 checks across 10
-groups) covers detection logic, redaction, escape injection, resource
-guards, hash integrity, the Python version floor, reject calibration, and
-anomaly collapse.
+The 10-digit floor is a deliberate trade-off. It is what catches an ordinary
+national number, and the cost is that any bare 10-digit or longer number is
+hashed, including an epoch-second timestamp if a vendor log emits one. Logcat
+threadtime stamps are date-formatted, not epoch, so timeline and anomaly
+timestamps are unaffected; reject causes, MCC/MNC and other short numeric
+fields stay readable. Runs of 9 digits or fewer are left alone.
+
+A self-contained regression suite (`run_tests.py`, 37 checks across 11
+groups) covers detection logic, redaction including the separator and
+short-digit-run formats, over-redaction guards for fields that must stay
+readable, escape injection, resource guards, hash integrity, the Python
+version floor, reject calibration, and anomaly collapse.
 
 ## Limitations
 

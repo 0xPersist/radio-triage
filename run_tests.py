@@ -56,6 +56,38 @@ check("cell id redacted", "98765432" not in out and "98765432" not in jout)
 # revealing assertion targets the anomaly line's identifiers.
 check("--no-redact reveals locally", "98765432" in run(["--log","t2.txt","--no-redact"]).stdout)
 
+# T2b: RT-001 regression — formats that previously slipped past redaction.
+# Each identifier rides on the OUT_OF_SERVICE line so it reaches an anomaly
+# raw excerpt; raw excerpts print only for anomalies, so an identifier on an
+# unparsed line would give a false pass.
+print("T2b: redaction coverage (RT-001)")
+_leakers = [
+    ("10-digit national", "4075551234",         "dial 4075551234"),
+    ("11-digit, no plus", "14075551234",        "dial 14075551234"),
+    ("dash-formatted IMEI", "35-209900-176148-1", "imei 35-209900-176148-1"),
+    ("space-formatted IMEI", "35 209900 176148 1", "imei 35 209900 176148 1"),
+]
+for _label, _ident, _payload in _leakers:
+    _fn = "t2b_" + _label.replace(" ", "_").replace("-", "_") + ".txt"
+    open(_fn, "w").write("\n".join([
+        L.format(m=0, s=1) + "ServiceStateTracker: IN_SERVICE",
+        L.format(m=0, s=2) + f"ServiceStateTracker: OUT_OF_SERVICE {_payload}",
+    ]) + "\n")
+    _plain = run(["--log", _fn]).stdout
+    _raw = run(["--log", _fn, "--no-redact"]).stdout
+    check(f"{_label}: reaches the excerpt at all", _ident in _raw)
+    check(f"{_label}: redacted by default", _ident not in _plain)
+
+# Over-redaction guard: numeric fields that must stay readable.
+open("t2c.txt", "w").write("\n".join([
+    L.format(m=0, s=1) + "ServiceStateTracker: IN_SERVICE",
+    L.format(m=0, s=2) + "ServiceStateTracker: OUT_OF_SERVICE rejectCause=17 mcc=310 mnc=260",
+]) + "\n")
+_out2c = run(["--log", "t2c.txt"]).stdout
+check("reject cause stays readable", "rejectCause=17" in _out2c)
+check("mcc/mnc stay readable", "mcc=310" in _out2c and "mnc=260" in _out2c)
+check("logcat timestamps not redacted", L.format(m=0, s=2).strip().split()[0] + " 12:00:02.000" in _out2c or "12:00:02.000" in _out2c)
+
 # T3: escape injection in log message
 # plant the escape payload on the line that BECOMES the anomaly excerpt
 open("t3.txt","w").write(L.format(m=0,s=1)+"Evil: IN_SERVICE ok\n"
