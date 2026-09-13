@@ -20,6 +20,25 @@ def check(name, cond, detail=""):
 
 L = "08-08 12:{m:02d}:{s:02d}.000  1000  2000 D "
 
+def LT(sec, mon=8, day=8, year=None):
+    """A threadtime prefix `sec` seconds past 12:00:00 on mon/day."""
+    h, rem = divmod(sec, 3600)
+    mi, ss = divmod(rem, 60)
+    pre = f"{year:04d}-" if year is not None else ""
+    return f"{pre}{mon:02d}-{day:02d} {12+h:02d}:{mi:02d}:{ss:02d}.000  1000  2000 D "
+
+def flap_fixture(name, offsets, routine_between=False, mon=8, day=8):
+    """Alternating service states at the given second offsets. The first is
+    the baseline, so len(offsets)-1 transitions are recorded."""
+    out = []
+    for i, off in enumerate(offsets):
+        st = "IN_SERVICE" if i % 2 == 0 else "OUT_OF_SERVICE"
+        out.append(LT(off, mon, day) + f"SST: ServiceState changed {st}")
+        if routine_between and i < len(offsets) - 1:
+            out.append(LT(off + 1, mon, day) + "SIMRecords: SIM_STATE ready")
+    open(name, "w").write("\n".join(out) + "\n")
+    return name
+
 # T1: functional — downgrade chain NR->LTE->GSM, service loss, IMS dereg, reject
 fx = "\n".join([
     L.format(m=0,s=1)+"ServiceStateTracker: ServiceState changed IN_SERVICE rat=NR",
@@ -122,6 +141,26 @@ for i,st in enumerate(states):
 open("t6.txt","w").write("\n".join(lines)+"\n")
 out = run(["--log","t6.txt"]).stdout
 check("flapping flagged", "registration_flapping" in out)
+
+# T6b: the flap window is elapsed time, not event count
+print("T6b: flap window measured in seconds")
+# four transitions inside 60 s -> flapping
+out = run(["--log", flap_fixture("t6b1.txt", [0, 10, 30, 45, 60])]).stdout
+check("4 transitions in 60 s -> flapping", "registration_flapping" in out)
+check("summary states the window in seconds", "within 120 s" in out)
+# four transitions spread over 10 minutes with only routine events between.
+# This is the case the old event-count window got wrong: the transitions sit
+# within 12 events of each other, but nowhere near 120 seconds apart.
+out = run(["--log", flap_fixture("t6b2.txt", [0, 150, 300, 450, 600],
+                                 routine_between=True)]).stdout
+check("4 transitions over 10 min -> NOT flapping",
+      "registration_flapping" not in out)
+# boundary: first-to-last span of 119 s vs 121 s
+out = run(["--log", flap_fixture("t6b3.txt", [0, 1, 40, 80, 120])]).stdout
+check("4 transitions spanning 119 s -> flapping", "registration_flapping" in out)
+out = run(["--log", flap_fixture("t6b4.txt", [0, 1, 40, 80, 122])]).stdout
+check("4 transitions spanning 121 s -> NOT flapping",
+      "registration_flapping" not in out)
 
 # T7: python floor — no 3.10-only syntax at import time
 print("T7: version floor")

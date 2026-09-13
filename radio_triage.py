@@ -90,8 +90,64 @@ REDACT_PATTERNS = (
     re.compile(r"\b(?:mCi|cellIdentity|ci|pci|tac|cid|lac)\s*=\s*\d+"),
 )
 
-FLAP_WINDOW_EVENTS = 12       # events window for flap detection
+FLAP_WINDOW_SECONDS = 120     # elapsed-time window for flap detection
 FLAP_TRANSITIONS = 4          # service transitions within window => flapping
+
+# Stamp broken into fields so it can be ordered and differenced. The year is
+# optional because plain `logcat -v threadtime` omits it (see Clock).
+TS_RE = re.compile(
+    r"^(?:(?P<year>\d{4})-)?(?P<mon>\d{2})-(?P<day>\d{2})\s+"
+    r"(?P<h>\d{2}):(?P<min>\d{2}):(?P<sec>\d{2})\.(?P<frac>\d+)$")
+
+# Cumulative days before each month using a leap-year table (February = 29).
+# Every year is treated as 366 days: ordering stays exact, because the largest
+# in-year offset (Dec 31 -> 366) is still below the next year's Jan 1 (367),
+# and elapsed time is only ever compared against a 120-second window, where
+# the one-day difference between a leap and a common year cannot matter. A
+# fixed table also lets a Feb 29 stamp parse under an inferred year, which
+# datetime() would reject outright.
+_CUM_DAYS = (0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335)
+
+
+class Clock:
+    """Turns a logcat stamp into one comparable number of seconds.
+
+    `logcat -v threadtime` omits the year, so a capture crossing New Year
+    sorts January ahead of December on the raw string, and the gap across the
+    boundary reads as negative. When the year is absent it is inferred: a
+    running counter starts at 0 and increments whenever the month goes
+    backwards (a 12 -> 01 wrap). That is correct for at most one year boundary
+    per capture, which is the documented assumption -- capture with
+    `-v year` to avoid the inference entirely.
+    """
+
+    def __init__(self) -> None:
+        self.year = 0
+        self.prev_mon = None
+
+    def seconds(self, ts: str) -> float:
+        """Absolute seconds for `ts`, or 0.0 if it is not a usable stamp.
+
+        Returning 0.0 rather than raising keeps crafted input (month 13, day
+        99) from aborting a triage run; such an event simply sorts first.
+        """
+        m = TS_RE.match(ts)
+        if not m:
+            return 0.0
+        mon, day = int(m.group("mon")), int(m.group("day"))
+        if not (1 <= mon <= 12 and 1 <= day <= 31):
+            return 0.0
+        if m.group("year") is not None:
+            self.year = int(m.group("year"))
+        elif self.prev_mon is not None and mon < self.prev_mon:
+            self.year += 1
+        self.prev_mon = mon
+        day_no = self.year * 366 + _CUM_DAYS[mon - 1] + day
+        return (day_no * 86400.0
+                + int(m.group("h")) * 3600
+                + int(m.group("min")) * 60
+                + int(m.group("sec"))
+                + float("0." + m.group("frac")))
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +183,7 @@ class Event:
     detail: str      # normalized detail (state name, RAT token, cause...)
     raw: str         # original message (redacted/sanitized only at output)
     phone: str = "0" # phone/slot hint (default 0 when absent)
+    order: float = 0.0  # (year, month, day, time) flattened to seconds
 
 
 @dataclass
@@ -196,6 +253,7 @@ def parse_log(path: str) -> Parsed:
                  " (crafted-input guard)")
     p.sha256 = hashlib.sha256(data).hexdigest()
 
+    clock = Clock()
     for raw in data.decode("utf-8", errors="replace").splitlines():
         p.lines_total += 1
         m = THREADTIME_RE.match(raw)
@@ -206,13 +264,16 @@ def parse_log(path: str) -> Parsed:
         msg = m.group("msg")
         ph = PHONE_HINT_RE.search(msg) or PHONE_PREFIX_RE.match(msg)
         phone = ph.group(1) if ph else "0"
+        # Advance the clock once per line, not once per event: one line can
+        # yield several events and the year inference is line-sequential.
+        order = clock.seconds(m.group("ts"))
         for kind, detail in classify(tag, msg):
             if len(p.events) >= MAX_EVENTS:
                 sys.exit(f"error: {path} produced more than {MAX_EVENTS}"
                          " events, refusing to continue"
                          " (crafted-input guard)")
             p.events.append(Event(m.group("ts"), tag, kind, detail, msg,
-                                  phone))
+                                  phone, order))
     return p
 
 
@@ -227,6 +288,7 @@ class Anomaly:
     kind: str
     summary: str
     raw: str
+    order: float = 0.0
 
 
 def collapse(anomalies: list[Anomaly]) -> list[Anomaly]:
@@ -240,7 +302,8 @@ def collapse(anomalies: list[Anomaly]) -> list[Anomaly]:
     for a in anomalies:
         key = (a.severity, a.kind, a.summary)
         if key not in groups:
-            groups[key] = {"first": a.ts, "last": a.ts, "n": 1, "raw": a.raw}
+            groups[key] = {"first": a.ts, "last": a.ts, "n": 1,
+                           "raw": a.raw, "order": a.order}
             order.append(key)
         else:
             g = groups[key]
@@ -253,7 +316,8 @@ def collapse(anomalies: list[Anomaly]) -> list[Anomaly]:
         g = groups[key]
         if g["n"] > 1:
             summary = f"{summary} [x{g['n']}, {g['first']} .. {g['last']}]"
-        out.append(Anomaly(g["first"], sev, kind, summary, g["raw"]))
+        out.append(Anomaly(g["first"], sev, kind, summary, g["raw"],
+                           g["order"]))
     return out
 
 
@@ -263,28 +327,32 @@ def detect_anomalies(p: Parsed) -> list[Anomaly]:
     # and global tracking fabricates cross-slot transitions (audit M3).
     last_rat: dict[str, str] = {}
     last_service: dict[str, str] = {}
-    service_transitions: dict[str, list[int]] = {}
+    service_transitions: dict[str, list[float]] = {}
 
     for i, ev in enumerate(p.events):
         ph = ev.phone
         if ev.kind == "service_state":
             prev = last_service.get(ph)
             if prev is not None and ev.detail != prev:
-                service_transitions.setdefault(ph, []).append(i)
+                service_transitions.setdefault(ph, []).append(ev.order)
                 if ev.detail in ("OUT_OF_SERVICE", "EMERGENCY_ONLY"):
                     anomalies.append(Anomaly(
                         ev.ts, "HIGH", "service_loss",
                         f"phone{ph}: service transition {prev} ->"
-                        f" {ev.detail}", ev.raw))
+                        f" {ev.detail}", ev.raw, ev.order))
             last_service[ph] = ev.detail
 
-            recent = [j for j in service_transitions.get(ph, [])
-                      if i - j <= FLAP_WINDOW_EVENTS]
+            # Elapsed time, not event count: a handful of transitions spread
+            # over ten minutes is not flapping, however few events sit
+            # between them. Pruning here also bounds the list.
+            recent = [t for t in service_transitions.get(ph, [])
+                      if ev.order - t <= FLAP_WINDOW_SECONDS]
+            service_transitions[ph] = recent
             if len(recent) >= FLAP_TRANSITIONS:
                 anomalies.append(Anomaly(
                     ev.ts, "MEDIUM", "registration_flapping",
                     f"phone{ph}: {len(recent)} service transitions within"
-                    f" {FLAP_WINDOW_EVENTS} events", ev.raw))
+                    f" {FLAP_WINDOW_SECONDS} s", ev.raw, ev.order))
                 service_transitions[ph] = []
 
         elif ev.kind == "rat":
@@ -298,18 +366,20 @@ def detect_anomalies(p: Parsed) -> list[Anomaly]:
                     f"phone{ph}: RAT downgrade {prev} -> {ev.detail}"
                     + (" (2G family: cell-site-simulator relevant,"
                        " verify with RF-side capture)" if to_2g else ""),
-                    ev.raw))
+                    ev.raw, ev.order))
             last_rat[ph] = ev.detail
 
         elif ev.kind == "ims" and ev.detail == "DEREGISTERED":
             anomalies.append(Anomaly(
                 ev.ts, "MEDIUM", "ims_deregistration",
-                "IMS deregistered (voice-over-LTE/NR impact)", ev.raw))
+                "IMS deregistered (voice-over-LTE/NR impact)", ev.raw,
+                ev.order))
 
         elif ev.kind == "reject":
             anomalies.append(Anomaly(
                 ev.ts, "MEDIUM", "registration_reject",
-                f"registration reject/denial: {ev.detail}", ev.raw))
+                f"registration reject/denial: {ev.detail}", ev.raw,
+                ev.order))
 
     return collapse(anomalies)
 
