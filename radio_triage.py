@@ -8,7 +8,7 @@ timeline and flags anomalies: service loss, RAT downgrades (weighted toward
 explicit reject causes.
 
 Input is produced by capture-radio.sh (bundled) or manually via:
-    adb logcat -b radio -v threadtime -d > radio.txt
+    adb logcat -b radio -v threadtime -v year -d > radio.txt
 
 Usage:
     radio_triage.py --log radio.txt
@@ -42,8 +42,10 @@ MAX_EVENTS = 500_000
 CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 # logcat -v threadtime: "MM-DD HH:MM:SS.mmm  PID  TID LEVEL TAG : message"
+# With -v year the stamp carries a "YYYY-" prefix, which removes the need to
+# infer the year (see Clock). Both spellings are accepted.
 THREADTIME_RE = re.compile(
-    r"^(?P<ts>\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+"
+    r"^(?P<ts>(?:\d{4}-)?\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+"
     r"(?P<pid>\d+)\s+(?P<tid>\d+)\s+(?P<level>[VDIWEF])\s+"
     r"(?P<tag>[^:]{1,64}?)\s*:\s(?P<msg>.*)$")
 
@@ -415,8 +417,10 @@ def print_human(p: Parsed, anomalies: list[Anomaly], redact_on: bool,
     sev_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
     if anomalies:
         print(f"ANOMALIES ({len(anomalies)}):")
+        # Sort on the parsed stamp, not the raw string: without the year a
+        # "01-01" line sorts ahead of "12-31" lexically.
         for a in sorted(anomalies, key=lambda a: (sev_order[a.severity],
-                                                  a.ts)):
+                                                  a.order)):
             print(f"  [{a.severity}] {a.ts}  {a.kind}: {a.summary}")
             print(f"      {fmt(a.raw, redact_on)}")
         print()

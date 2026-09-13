@@ -21,5 +21,7 @@ fi
 
 umask 077
 rm -f -- "$OUT"
-adb logcat -b radio -v threadtime -d > "$OUT"
+# -v year stamps each line with the year. Without it logcat emits only
+# MM-DD and a capture crossing New Year cannot be ordered reliably.
+adb logcat -b radio -v threadtime -v year -d > "$OUT"
 echo "done: $OUT ($(wc -l < "$OUT") lines)"

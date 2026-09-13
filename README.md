@@ -26,7 +26,7 @@ python3 radio_triage.py --log baseline-radio.txt --timeline
 python3 radio_triage.py --log baseline-radio.txt --json
 ```
 
-Or capture manually: `adb logcat -b radio -v threadtime -d > radio.txt`
+Or capture manually: `adb logcat -b radio -v threadtime -v year -d > radio.txt`
 
 ## Detections
 
@@ -89,8 +89,10 @@ version floor, reject calibration, and anomaly collapse.
   and all state is tracked per phone/slot (phoneId/slotId hints, default
   phone 0), so recoveries are not misread as outages and multi-SIM logs do
   not fabricate cross-slot downgrades.
-- Known minor limitations: logcat timestamps lack a year, so ordering
-  across a year boundary is unreliable.
+- Known minor limitation: plain `logcat -v threadtime` omits the year, so
+  when it is absent the year is inferred from month wraps (12 -> 01). That
+  is correct for at most one year boundary per capture. Capture with
+  `-v year`, as `capture-radio.sh` does, and the stamp is used as given.
 - Host-side logs show what the OS observed, not what the network did. RF
   conclusions (e.g. IMSI catcher presence) require RF-side evidence.
 

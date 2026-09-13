@@ -257,6 +257,54 @@ out = run(["--log","t10b.txt"]).stdout
 check("interleaved phones collapse to two groups",
       out.count("rat_downgrade") == 2 and out.count("[x4") == 2)
 
+# T11: year boundary — logcat omits the year, so Jan sorts before Dec
+print("T11: year-boundary ordering")
+P = "  1000  2000 D "
+def wrap_lines(yr_dec=None, yr_jan=None):
+    d = f"{yr_dec:04d}-" if yr_dec else ""
+    j = f"{yr_jan:04d}-" if yr_jan else ""
+    return [
+        f"{d}12-31 23:58:00.000{P}SST: ServiceState changed IN_SERVICE rat=LTE RegState",
+        f"{d}12-31 23:59:00.000{P}SST: ServiceState changed OUT_OF_SERVICE",
+        f"{j}01-01 00:01:00.000{P}SST: RegState rat=GSM IN_SERVICE",
+    ]
+
+open("t11a.txt", "w").write("\n".join(wrap_lines()) + "\n")
+out = run(["--log", "t11a.txt"]).stdout
+check("wrap: both anomalies found",
+      "service_loss" in out and "rat_downgrade" in out)
+# the December outage must print before the January downgrade; on the raw
+# string "01-01" sorts ahead of "12-31", which is the bug
+check("wrap: Dec outage ordered before Jan downgrade",
+      out.index("service_loss") < out.index("rat_downgrade"))
+
+# the wrap must not read as a 120-second window: two transitions late on
+# Dec 31 and two early on Jan 01, two hours apart in real time
+open("t11b.txt", "w").write("\n".join([
+    f"12-31 23:00:00.000{P}SST: ServiceState changed IN_SERVICE",
+    f"12-31 23:00:30.000{P}SST: ServiceState changed OUT_OF_SERVICE",
+    f"12-31 23:01:00.000{P}SST: ServiceState changed IN_SERVICE",
+    f"01-01 01:00:00.000{P}SST: ServiceState changed OUT_OF_SERVICE",
+    f"01-01 01:00:30.000{P}SST: ServiceState changed IN_SERVICE",
+]) + "\n")
+out = run(["--log", "t11b.txt"]).stdout
+check("wrap: not treated as a 120-second flap window",
+      "registration_flapping" not in out)
+
+# explicit years (logcat -v year) parse and give the same anomalies
+open("t11c.txt", "w").write("\n".join(wrap_lines(2026, 2027)) + "\n")
+ja = json.loads(run(["--log", "t11a.txt", "--json"]).stdout)
+jc = json.loads(run(["--log", "t11c.txt", "--json"]).stdout)
+check("explicit year: lines parse", jc["log"]["lines_matched"] == 3)
+sig = lambda j: [(a["kind"], a["severity"], a["summary"]) for a in j["anomalies"]]
+check("explicit year: identical anomalies to inferred", sig(ja) == sig(jc))
+check("explicit year: ordering preserved",
+      [a["ts"] for a in jc["anomalies"]][0].startswith("2026-"))
+
+# hashing is over the input bytes and is untouched by stamp parsing
+check("explicit year: sha256 still over exact input bytes",
+      jc["log"]["sha256"] == hashlib.sha256(open("t11c.txt", "rb").read()).hexdigest())
+
 print()
 print(f"RESULTS: {len(PASS)} passed, {len(FAIL)} failed")
 if FAIL: print("FAILED:", FAIL); sys.exit(1)
