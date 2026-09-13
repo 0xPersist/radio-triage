@@ -305,6 +305,43 @@ check("explicit year: ordering preserved",
 check("explicit year: sha256 still over exact input bytes",
       jc["log"]["sha256"] == hashlib.sha256(open("t11c.txt", "rb").read()).hexdigest())
 
+# T12: February length when the year is unknown
+print("T12: February length inference")
+def feb_fixture(name, yr=None, with_feb29=False):
+    """Four service transitions spanning Feb 28 23:59:00 -> Mar 1 00:00:30,
+    70 real seconds apart in a common year."""
+    y = f"{yr:04d}-" if yr else ""
+    rows = [
+        (f"{y}02-28 23:59:00.000", "SST: ServiceState changed IN_SERVICE"),
+        (f"{y}02-28 23:59:20.000", "SST: ServiceState changed OUT_OF_SERVICE"),
+        (f"{y}02-28 23:59:40.000", "SST: ServiceState changed IN_SERVICE"),
+    ]
+    if with_feb29:
+        # evidence of a leap year, on a line that produces no anomaly
+        rows.append((f"{y}02-29 12:00:00.000", "SIMRecords: SIM_STATE ready"))
+    rows += [
+        (f"{y}03-01 00:00:10.000", "SST: ServiceState changed OUT_OF_SERVICE"),
+        (f"{y}03-01 00:00:30.000", "SST: ServiceState changed IN_SERVICE"),
+    ]
+    open(name, "w").write("\n".join(f"{t}{P}{m}" for t, m in rows) + "\n")
+    return name
+
+# no 02-29 anywhere: February is 28 days, so the midnight is a 70-second step
+out = run(["--log", feb_fixture("t12a.txt")]).stdout
+check("Feb 28 -> Mar 1 with no 02-29: flapping flagged",
+      "registration_flapping" in out)
+# a 02-29 stamp proves a leap year: Feb 29 sits between, so these are a day apart
+out = run(["--log", feb_fixture("t12b.txt", with_feb29=True)]).stdout
+check("Feb 28 -> Mar 1 with a 02-29 present: NOT flapping",
+      "registration_flapping" not in out)
+# an explicit year needs no guessing at all — the real calendar decides
+out = run(["--log", feb_fixture("t12c.txt", yr=2027)]).stdout
+check("explicit common year 2027: flapping flagged",
+      "registration_flapping" in out)
+out = run(["--log", feb_fixture("t12d.txt", yr=2028)]).stdout
+check("explicit leap year 2028: NOT flapping",
+      "registration_flapping" not in out)
+
 print()
 print(f"RESULTS: {len(PASS)} passed, {len(FAIL)} failed")
 if FAIL: print("FAILED:", FAIL); sys.exit(1)

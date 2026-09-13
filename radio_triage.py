@@ -26,6 +26,7 @@ No dependencies beyond the Python standard library. Python 3.8+.
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import re
@@ -101,14 +102,19 @@ TS_RE = re.compile(
     r"^(?:(?P<year>\d{4})-)?(?P<mon>\d{2})-(?P<day>\d{2})\s+"
     r"(?P<h>\d{2}):(?P<min>\d{2}):(?P<sec>\d{2})\.(?P<frac>\d+)$")
 
-# Cumulative days before each month using a leap-year table (February = 29).
-# Every year is treated as 366 days: ordering stays exact, because the largest
-# in-year offset (Dec 31 -> 366) is still below the next year's Jan 1 (367),
-# and elapsed time is only ever compared against a 120-second window, where
-# the one-day difference between a leap and a common year cannot matter. A
-# fixed table also lets a Feb 29 stamp parse under an inferred year, which
-# datetime() would reject outright.
-_CUM_DAYS = (0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335)
+# Cumulative days before each month, for the two February lengths. These are
+# only used when the year is unknown and must be inferred; with a real year
+# the real calendar is used instead.
+#
+# The length matters for elapsed time, not just ordering: a fixed 29-day
+# February makes Feb 28 -> Mar 1 in a common year read as two days apart, so
+# a 120-second flap window straddling that midnight is missed entirely.
+_CUM_FEB28 = (0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)  # 365
+_CUM_FEB29 = (0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335)  # 366
+
+# A 29 February stamp anywhere in the capture is proof the capture sits in a
+# leap year, which is the only evidence available when no year is logged.
+FEB29_RE = re.compile(r"^(?:\d{4}-)?02-29\s+\d{2}:\d{2}:\d{2}\.", re.M)
 
 
 class Clock:
@@ -123,15 +129,20 @@ class Clock:
     `-v year` to avoid the inference entirely.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, feb29: bool = False) -> None:
         self.year = 0
         self.prev_mon = None
+        # Set once a real year has been seen; from then on the real calendar
+        # is authoritative and nothing needs inferring.
+        self.dated = False
+        self._cum = _CUM_FEB29 if feb29 else _CUM_FEB28
+        self._year_len = 366 if feb29 else 365
 
     def seconds(self, ts: str) -> float:
         """Absolute seconds for `ts`, or 0.0 if it is not a usable stamp.
 
         Returning 0.0 rather than raising keeps crafted input (month 13, day
-        99) from aborting a triage run; such an event simply sorts first.
+        99, Feb 30) from aborting a triage run; such an event sorts first.
         """
         m = TS_RE.match(ts)
         if not m:
@@ -141,10 +152,17 @@ class Clock:
             return 0.0
         if m.group("year") is not None:
             self.year = int(m.group("year"))
+            self.dated = True
         elif self.prev_mon is not None and mon < self.prev_mon:
             self.year += 1
         self.prev_mon = mon
-        day_no = self.year * 366 + _CUM_DAYS[mon - 1] + day
+        if self.dated:
+            try:
+                day_no = datetime.date(self.year, mon, day).toordinal()
+            except ValueError:
+                return 0.0
+        else:
+            day_no = self.year * self._year_len + self._cum[mon - 1] + day
         return (day_no * 86400.0
                 + int(m.group("h")) * 3600
                 + int(m.group("min")) * 60
@@ -259,8 +277,9 @@ def parse_log(path: str) -> Parsed:
                  " (crafted-input guard)")
     p.sha256 = hashlib.sha256(data).hexdigest()
 
-    clock = Clock()
-    for raw in data.decode("utf-8", errors="replace").splitlines():
+    text = data.decode("utf-8", errors="replace")
+    clock = Clock(feb29=bool(FEB29_RE.search(text)))
+    for raw in text.splitlines():
         p.lines_total += 1
         m = THREADTIME_RE.match(raw)
         if not m:
