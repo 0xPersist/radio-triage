@@ -217,6 +217,25 @@ out = run(["--log","t9.txt"]).stdout
 check("rejectCause=0 ignored", out.count("registration_reject") == 1)
 check("nonzero cause still fires", "rejectCause=15" in out)
 
+# T9b: every all-zero cause value is benign, not just a single "0"
+print("T9b: all-zero reject causes")
+fx9b = "\n".join([
+    LT(1) + "RILJ: registration rejectCause=0 IN_SERVICE",
+    LT(2) + "RILJ: registration failCause=00 IN_SERVICE",
+    LT(3) + "RILJ: registration denyCause: 000 IN_SERVICE",
+    LT(4) + "RILJ: registration rejectCause=17 IN_SERVICE",
+    LT(5) + "RILJ: registration rejectCause=01 IN_SERVICE",
+    ""])
+open("t9b.txt", "w").write(fx9b)
+out = run(["--log", "t9b.txt"]).stdout
+check("rejectCause=0 ignored", "rejectCause=0 " not in out and "rejectCause=0\n" not in out)
+check("failCause=00 ignored", "failCause=00" not in out)
+check("denyCause: 000 ignored", "denyCause: 000" not in out)
+check("rejectCause=17 still fires", "rejectCause=17" in out)
+# a leading zero is not an all-zero value: 01 is cause 1 and must still fire
+check("rejectCause=01 still fires", "rejectCause=01" in out)
+check("exactly two rejects flagged", out.count("registration_reject") == 2)
+
 # T10: identical-anomaly collapse
 print("T10: anomaly collapse")
 lines = []

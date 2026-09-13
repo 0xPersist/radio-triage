@@ -230,9 +230,13 @@ def classify(tag: str, msg: str) -> list[tuple[str, str]]:
     if "setRadioPower" in msg or "RADIO_POWER" in msg:
         out.append(("radio_power", "POWER_EVENT"))
 
+    # cause=0 means "no cause given" and is routine in live captures, so it
+    # must not raise a reject. `(?!0+\b)` rejects any all-zero value: 0, 00,
+    # 000. A leading zero on a real cause (01, 017) still fires, because 0+
+    # cannot reach a word boundary there.
     m = re.search(
         r"(?:rejectCause|reject_cause|denyCause|failCause)\s*[=:]\s*"
-        r"(?!0\b)(\d+)"
+        r"(?!0+\b)(\d+)"
         r"|regState=DENIED"
         r"|registration.{0,20}denied", msg, re.IGNORECASE)
     if m:

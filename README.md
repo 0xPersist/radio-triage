@@ -89,9 +89,8 @@ version floor, reject calibration, and anomaly collapse.
   and all state is tracked per phone/slot (phoneId/slotId hints, default
   phone 0), so recoveries are not misread as outages and multi-SIM logs do
   not fabricate cross-slot downgrades.
-- Known minor limitations: cause=0 (benign) can match the reject rule;
-  logcat timestamps lack a year, so ordering across a year boundary is
-  unreliable.
+- Known minor limitations: logcat timestamps lack a year, so ordering
+  across a year boundary is unreliable.
 - Host-side logs show what the OS observed, not what the network did. RF
   conclusions (e.g. IMSI catcher presence) require RF-side evidence.
 
